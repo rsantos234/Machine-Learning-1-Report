@@ -1,0 +1,460 @@
+---
+title: "stat learning project draft code"
+output: pdf_document
+date: "2023-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+df <- read.csv('diabetes.csv')
+str(df)
+#1 means they have diabetes
+
+```
+
+```{r}
+df_tofix <- subset(df, select = -c(Pregnancies, Outcome) )
+#need to keep zeros in pregnancies and outcome but impute them in others
+
+df_tofix[df_tofix == 0] <- NA
+
+sum(is.na(df_tofix))
+#652 needing imputation
+
+#make sure no blank columns
+```
+```{r}
+library(visdat)
+# Plot missing data distribution
+vis_miss(df_tofix)
+#we will delete the insulin column but impute the skin thickness column
+#so as not to lose too much data
+
+df_tofix <- subset(df_tofix, select = -Insulin)
+
+```
+
+
+
+```{r}
+library(mice)
+imp_model <- mice(df_tofix, method = 'pmm', m = 1)
+
+# Perform the imputation
+df_imputed <- complete(imp_model)
+
+print(df_imputed)
+```
+
+```{r}
+small_df <- subset(df, select = -c(Glucose, BloodPressure, SkinThickness, Insulin, BMI, DiabetesPedigreeFunction, Age))
+#selecting Pregnancies and Outcome from original df
+
+full_df <- cbind(small_df, df_imputed) #combining the above 2 cols w the imputed cols
+
+#cleaned data
+```
+
+
+```{r}
+#split the data 70/30
+#set.seed(1)
+sample <- sample(c(TRUE, FALSE), nrow(full_df), replace=TRUE, prob=c(0.7,0.3))
+train  <- full_df[sample, ]
+test   <- full_df[!sample, ]
+outcome_train <- train$Outcome
+outcome_test <- test$Outcome
+
+```
+
+```{r}
+#checking distribution of outcome
+
+par(mfrow = c(1, 3))  # Set up a 1x3 plot layout
+
+# Histogram for the training set
+hist(outcome_train, main = "Training Set", col = "lightblue", xlim = c(min(full_df$Outcome, na.rm = TRUE), max(full_df$Outcome, na.rm = TRUE)))
+
+# Histogram for the test set
+hist(outcome_test, main = "Test Set", col = "lightgreen", xlim = c(min(full_df$Outcome, na.rm = TRUE), max(full_df$Outcome, na.rm = TRUE)))
+
+# Histogram for the original unsplit data
+hist(full_df$Outcome, main = "Imputed Data", col = "lightcoral", xlim = c(min(full_df$Outcome, na.rm = TRUE), max(full_df$Outcome, na.rm = TRUE)))
+
+par(mfrow = c(1, 1))  # Reset the plot layout
+
+#the distribution of outcome has been preserved in the train and test data sets
+
+```
+```{r}
+#corrplot
+library(corrplot)
+corPred<-cor(full_df)
+corrplot(corPred,method="number",number.cex=.65)
+
+#there does not seem to be any indication of multicollinearity
+```
+
+```{r}
+#histograms
+
+par(mfrow = c(2, 4))  # Adjust the layout for 8 variables
+
+for (col in names(train)) {
+  hist(train[[col]], main = paste("Histogram of", col), col = "lightblue", xlab = col)
+}
+
+par(mfrow = c(1, 1))  # Reset the plot layout
+
+#for sure diabetes pedigree function
+#maybe transform pregnancies and age
+
+```
+
+
+```{r}
+#performing various stepwise regressions
+
+lr_pima<-glm(Outcome~.,data=train,family=binomial)
+summary(lr_pima)
+
+lr_pima2 <- glm(Outcome ~ Pregnancies + Glucose + SkinThickness + BMI + log(DiabetesPedigreeFunction) + Age + BloodPressure,
+                data=train,family=binomial)
+summary(lr_pima2)
+
+
+
+library(MASS)
+step.model.b<-stepAIC(lr_pima,direction="both") #keep Pregnancies + Glucose + BMI + DiabetesPedigreeFunction
+
+step.model.b2<-stepAIC(lr_pima2,direction="both") #keep Pregnancies + Glucose + BMI + log(DiabetesPedigreeFunction)
+
+```
+
+
+```{r}
+# logistic regression
+set.seed(1)
+logistic_probs <- predict(lr_pima, test, type = "response")
+logistic_pred = rep(0, length(logistic_probs))
+logistic_pred[logistic_probs > 0.5] <- 1
+table(logistic_pred, outcome_test)
+mean(logistic_pred == outcome_test)
+#76.42% prediction accuracy
+
+#ones chosen by stepwise
+set.seed(1)
+lr_pima6<-glm(Outcome~Pregnancies + Glucose + BMI + DiabetesPedigreeFunction,data=train,family=binomial)
+summary(lr_pima6)
+logistic_probsfinal <- predict(lr_pima6, test, type = "response")
+logistic_predfinal = rep(0, length(logistic_probsfinal))
+logistic_predfinal[logistic_probsfinal > 0.5] <- 1
+table(logistic_predfinal, outcome_test)
+mean(logistic_predfinal == outcome_test)
+#76.83% prediction accuracy
+
+
+```
+
+```{r}
+# Log transform in the training data
+train2 <- train
+train2$log_DiabetesPedigreeFunction <- log(train$DiabetesPedigreeFunction + 1e-10)
+
+# Log transform in the test data (using the same constant)
+test2 <- test
+test2$log_DiabetesPedigreeFunction <- log(test$DiabetesPedigreeFunction + 1e-10)
+
+# Fit the logistic regression model
+set.seed(1)
+lr_pima7 <- glm(Outcome ~ Pregnancies + Glucose + BMI + log_DiabetesPedigreeFunction, 
+                data = train2, family = binomial)
+
+# Predict using the test data
+logistic_probs <- predict(lr_pima7, test2, type = "response")
+logistic_pred <- ifelse(logistic_probs > 0.5, 1, 0)
+
+# Continue with evaluation
+table(logistic_pred, outcome_test)
+mean(logistic_pred == outcome_test)
+#76.42%
+
+```
+
+
+```{r}
+
+library(ROCR)
+#log ROC
+pred.roc = prediction(logistic_probsfinal, outcome_test)
+perf.roc = performance(pred.roc,"tpr","fpr")
+plot(perf.roc,main = "ROC",col = "red")
+abline(0,1,col = "blue",lty = 2)
+pred.auc = performance(pred.roc,"auc")
+print(paste("AUC=",pred.auc@y.values[[1]],sep = ""))
+
+#AUC = 0.833838421169339
+```
+
+```{r}
+
+library(MASS)
+lda_pima <- lda(Outcome~Pregnancies + Glucose + BMI + DiabetesPedigreeFunction, 
+                data = train)
+lda_probs <- predict(lda_pima, test)
+table(lda_probs$class, outcome_test)
+mean(lda_probs$class == outcome_test)
+
+#lda.pred.te=predict(lda_pima,test, type="response")
+#conf <- table(list(predicted=lda.pred.te$class, observed=outcome_test))
+#conf
+#mean(lda.pred.te$class==outcome_test)
+
+library(ROCR)
+#lda ROC
+pred.roc = prediction(lda_probs$posterior[,2], outcome_test)
+perf.roc_lda = performance(pred.roc,"tpr","fpr")
+plot(perf.roc_lda,main = "ROC",col = "red")
+abline(0,1,col = "blue",lty = 2)
+pred.auc = performance(pred.roc,"auc")
+print(paste("AUC=",pred.auc@y.values[[1]],sep = ""))
+#AUC=0.833468844703969
+#print(lda_probs$posterior[,1])
+
+```
+
+
+```{r}
+#logistic_model <- glm(Outcome ~ ., data = train, family = "binomial")
+#logistic_probs <- predict(logistic_model, newdata = test, type = "response")
+
+# Create a prediction object for logistic regression
+pred.roc_logistic <- prediction(logistic_probsfinal, outcome_test)
+perf.roc_logistic <- performance(pred.roc_logistic, "tpr", "fpr")
+
+# Plot the ROC curve for logistic regression
+plot(perf.roc_logistic, main = "ROC", col = "red")
+abline(0, 1, col = "blue", lty = 2)
+pred.auc_logistic <- performance(pred.roc_logistic, "auc")
+print(paste("Logistic Regression AUC=", pred.auc_logistic@y.values[[1]], sep = ""))
+
+
+#lda_pima <- lda(Outcome ~ ., 
+                #data = train)
+# Assuming lda_pima is your lda model for Outcome ~ .
+#lda_probs <- predict(lda_pima, test)
+
+# Extract class probabilities for the positive class from the lda object
+lda_probs_pos <- as.vector(lda_probs$posterior[, "1"])
+
+# Create a binary outcome variable (0 or 1) based on a threshold
+lda_preds <- ifelse(lda_probs_pos > 0.5, 1, 0)
+
+# Create a prediction object for lda
+pred.roc_lda <- prediction(lda_probs_pos, outcome_test)
+perf.roc_lda <- performance(pred.roc_lda, "tpr", "fpr")
+
+# Plot the ROC curve for lda
+plot(perf.roc_lda, col = "green", add = TRUE)
+
+legend("bottomright", legend = c("Logistic Regression", "LDA"),
+       col = c("red", "green"), lwd = 2, cex = 1.2)
+
+# You can add abline(0, 1, col = "blue", lty = 2) here again if you want the diagonal line
+
+# Display the AUC for lda
+pred.auc_lda <- performance(pred.roc_lda, "auc")
+print(paste("LDA AUC=", pred.auc_lda@y.values[[1]], sep = ""))
+```
+
+```{r}
+qda_pima <- qda(Outcome~Pregnancies + Glucose + BMI + DiabetesPedigreeFunction, 
+                data = train)
+qda_probs <- predict(qda_pima, test)
+table(qda_probs$class, outcome_test)
+mean(qda_probs$class == outcome_test)
+#75.61% prediction accuracy
+
+```
+
+
+
+```{r}
+
+#not transformed data letting enet do variable selection
+library(glmnet)
+
+# Convert 'Outcome' to a numeric factor (0 or 1)
+train$Outcome <- as.numeric(train$Outcome) - 1
+
+# Create a matrix of predictors (excluding the outcome variable)
+x_train <- model.matrix(Outcome ~ . - 1, data = train)
+y_train <- train$Outcome
+
+# Fit an elastic net model with cross-validation
+set.seed(1)
+cv_model <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 0.5)
+
+# Display the optimal lambda value selected by cross-validation
+best_lambda <- cv_model$lambda.min
+cat("Optimal Lambda:", best_lambda, "\n")
+
+# Obtain cross-validated predictions for the test data
+x_test <- model.matrix(Outcome ~ . - 1, data = test)
+cv_predictions <- predict(cv_model, newx = x_test, s = best_lambda, type = "response")
+
+# Convert predicted probabilities to binary predictions (0 or 1)
+binary_predictions <- ifelse(cv_predictions > 0.5, 1, 0)
+
+# Display or use the binary predictions as needed
+print(binary_predictions)
+
+# Assuming 'Outcome' is your binary outcome variable in the test data
+true_outcomes <- test$Outcome
+
+# Create a confusion matrix
+conf_matrix <- table(binary_predictions, true_outcomes)
+
+# Display the confusion matrix
+print(conf_matrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+
+# Display accuracy
+cat("Accuracy:", accuracy, "\n")
+
+# Install and load the 'ROCR' package (if not already installed)
+# install.packages("ROCR")
+library(ROCR)
+
+# Create a prediction object for the ROC curve
+prediction_obj <- prediction(cv_predictions, true_outcomes)
+
+# Create an ROC curve object
+roc_curve <- performance(prediction_obj, "tpr", "fpr")
+
+# Plot the ROC curve
+plot(roc_curve, main = "ROC Curve", col = "blue", lwd = 2)
+
+# Add diagonal reference line (random classifier)
+abline(a = 0, b = 1, col = "gray", lty = 2, lwd = 2)
+
+# Calculate and display the AUC (Area Under the Curve)
+auc_value <- performance(prediction_obj, "auc")@y.values[[1]]
+cat("AUC:", auc_value, "\n")
+
+coeffs <- coef(cv_model, s = best_lambda)
+data.frame(name= coeffs@Dimnames[[1]][coeffs@i +1], coefficient = coeffs@x)
+
+#76.83% accuracy
+
+#picked all 7 that were left after imputation (no insulin)
+
+
+```
+
+```{r}
+# Create a prediction object for logistic regression
+pred.roc_logistic <- prediction(logistic_probsfinal, outcome_test)
+perf.roc_logistic <- performance(pred.roc_logistic, "tpr", "fpr")
+
+# Plot the ROC curve for logistic regression
+plot(perf.roc_logistic, main = "ROC", col = "red")
+abline(0, 1, col = "blue", lty = 2)
+pred.auc_logistic <- performance(pred.roc_logistic, "auc")
+print(paste("Logistic Regression AUC=", pred.auc_logistic@y.values[[1]], sep = ""))
+
+# Extract class probabilities for the positive class from the lda object
+lda_probs_pos <- as.vector(lda_probs$posterior[, "1"])
+
+# Create a binary outcome variable (0 or 1) based on a threshold
+lda_preds <- ifelse(lda_probs_pos > 0.5, 1, 0)
+
+# Create a prediction object for lda
+pred.roc_lda <- prediction(lda_probs_pos, outcome_test)
+perf.roc_lda <- performance(pred.roc_lda, "tpr", "fpr")
+
+# Plot the ROC curve for lda
+plot(perf.roc_lda, col = "green", add = TRUE)
+
+legend("bottomright", legend = c("Logistic Regression", "LDA"),
+       col = c("red", "green"), lwd = 2, cex = 1.2)
+
+# You can add abline(0, 1, col = "blue", lty = 2) here again if you want the diagonal line
+
+# Display the AUC for lda
+pred.auc_lda <- performance(pred.roc_lda, "auc")
+print(paste("LDA AUC=", pred.auc_lda@y.values[[1]], sep = ""))
+
+
+# Fit a QDA model
+qda_pima <- qda(Outcome ~ Pregnancies + Glucose + BMI + DiabetesPedigreeFunction, 
+                data = train)
+qda_probs <- predict(qda_pima, test)
+
+# Extract class assignments for QDA
+qda_preds <- as.numeric(qda_probs$class)
+
+# Create a prediction object for QDA
+pred.roc_qda <- prediction(qda_probs$posterior[, 2], outcome_test)  # Use the second column for positive class
+perf.roc_qda <- performance(pred.roc_qda, "tpr", "fpr")
+
+# Plot the ROC curve for QDA
+plot(perf.roc_qda, col = "blue", add = TRUE)
+
+
+# Fit an Elastic Net model
+library(glmnet)
+
+# Convert 'Outcome' to a numeric factor (0 or 1)
+train$Outcome <- as.numeric(train$Outcome) - 1
+
+# Create a matrix of predictors (excluding the outcome variable)
+x_train <- model.matrix(Outcome ~ . - 1, data = train)
+y_train <- train$Outcome
+
+# Fit an elastic net model with cross-validation
+set.seed(1)
+cv_model <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 0.5)
+
+# Obtain cross-validated predictions for the test data
+x_test <- model.matrix(Outcome ~ . - 1, data = test)
+cv_predictions <- predict(cv_model, newx = x_test, s = "lambda.min", type = "response")
+
+# Convert predicted probabilities to binary predictions (0 or 1)
+binary_predictions <- ifelse(cv_predictions > 0.5, 1, 0)
+
+# Create a prediction object for Elastic Net
+pred.roc_enet <- prediction(cv_predictions, true_outcomes)
+perf.roc_enet <- performance(pred.roc_enet, "tpr", "fpr")
+
+# Plot the ROC curve for Elastic Net
+plot(perf.roc_enet, col = "orange", add = TRUE)
+
+# Add diagonal reference line (random classifier)
+abline(a = 0, b = 1, col = "gray", lty = 2, lwd = 2)
+
+# Legend
+legend("bottomright", legend = c("Logistic Regression", "LDA", "QDA", "Elastic Net"),
+       col = c("red", "green", "blue", "orange"), lwd = 2, cex = 1.2)
+
+# Calculate and display the AUC for Elastic Net
+pred.auc_enet <- performance(pred.roc_enet, "auc")@y.values[[1]]
+cat("Elastic Net AUC:", pred.auc_enet, "\n")
+
+# Calculate and display the AUC for QDA
+pred.auc_qda <- performance(pred.roc_qda, "auc")@y.values[[1]]
+cat("QDA AUC:", pred.auc_qda, "\n")
+
+#[1] "Logistic Regression AUC=0.833838421169339"
+#[1] "LDA AUC=0.833468844703969"
+#Elastic Net AUC: 0.8345776 
+#QDA AUC: 0.8369429 
+
+```
+
+
